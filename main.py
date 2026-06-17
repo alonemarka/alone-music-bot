@@ -19,7 +19,7 @@ is_playing = {}
 
 # ====================== DUYURU SİSTEMİ ======================
 last_announcement_id = 0
-API_DUYURU_URL = "https://alonesocial.gt.tc/api/duyuru.php"
+API_DUYURU_URL = "https://alonesocial.rf.gd//api/duyuru.php"
 
 async def check_announcements():
     global last_announcement_id
