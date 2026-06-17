@@ -4,4 +4,3 @@ yt-dlp
 aiohttp
 python-dotenv
 groq
-pytgcalls==3.0.0b7   # En stabil versiyonlardan biri
