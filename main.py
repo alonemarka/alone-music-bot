@@ -2,55 +2,51 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from pytgcalls import PyTgCalls, StreamType
 from pytgcalls.types import AudioPiped
-from yt_dlp import YoutubeDL
 import asyncio
 import os
-from config import API_ID, API_HASH, BOT_TOKEN, ADMIN_ID, DOWNLOAD_DIR
-from cache import get_cache_path, is_cached
+
+from config import API_ID, API_HASH, BOT_TOKEN, ADMIN_ID
+from music import download_music, is_cached, get_cache_path
 from database import log_play
 from ai import ai_cevap
 
 app = Client("AloneMusic", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 call = PyTgCalls(app)
 
-queue = {}
-is_playing = {}
+# Queue ve oynatma durumu
+queue = {}          # chat_id : [file_path1, file_path2, ...]
+is_playing = {}     # chat_id : True/False
 
 # ====================== KOMUTLAR ======================
 
 @app.on_message(filters.command("start"))
 async def start(client, message: Message):
-    await message.reply("**AloneMusic Bot**\n\nMüzik çalmak için `/oynat şarkı adı` yaz.")
+    await message.reply("**AloneMusic Bot**\n\n`/oynat <şarkı adı>` yazarak müzik çalabilirsin.")
 
 @app.on_message(filters.command("oynat"))
 async def oynat(client, message: Message):
     if len(message.command) < 2:
-        return await message.reply("Kullanım: `/oynat <şarkı adı>`")
+        return await message.reply("**Kullanım:** `/oynat <şarkı adı veya link>`")
     
     query = " ".join(message.command[1:])
     chat_id = message.chat.id
-    
+
     await message.reply(f"**Aranıyor:** `{query}`")
-    
+
     try:
-        file_path = get_cache_path(query)
-        
+        # Cache kontrolü + indirme
         if not is_cached(query):
-            await message.reply("İndiriliyor, lütfen bekle...")
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': file_path,
-                'quiet': True,
-            }
-            with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f"ytsearch:{query}", download=True)
-                title = info.get('title', query)
+            await message.reply("**İndiriliyor...** Lütfen bekleyin.")
+            file_path = await download_music(query)
+            if not file_path:
+                return await message.reply("İndirme başarısız oldu.")
         else:
-            title = query
-        
+            file_path = get_cache_path(query)
+            await message.reply("**Cache'den oynatılıyor** ✅")
+
         log_play(query, file_path)
-        
-        # Sesli sohbete katıl
+
+        # Sesli sohbete katıl ve çal
         if chat_id not in is_playing or not is_playing[chat_id]:
             await call.join_group_call(
                 chat_id,
@@ -58,23 +54,34 @@ async def oynat(client, message: Message):
                 stream_type=StreamType().local_stream
             )
             is_playing[chat_id] = True
-            await message.reply(f"**Şimdi Çalıyor:** `{title}`")
+            await message.reply(f"**Şimdi Çalıyor:** `{query}`")
         else:
-            # Queue'ya ekle (basit queue)
+            # Queue'ya ekle
             if chat_id not in queue:
                 queue[chat_id] = []
             queue[chat_id].append(file_path)
-            await message.reply(f"**Sıraya eklendi:** `{title}`")
-            
-    except Exception as e:
-        await message.reply(f"Hata: {str(e)}")
+            await message.reply(f"**Sıraya eklendi:** `{query}`")
 
-@app.on_message(filters.command("atla"))
+    except Exception as e:
+        await message.reply(f"**Hata:** {str(e)}")
+
+@app.on_message(filters.command(["atla", "skip"]))
 async def atla(client, message: Message):
     chat_id = message.chat.id
     try:
-        await call.change_stream(chat_id, AudioPiped("next"))  # Basit atlama
-        await message.reply("Şarkı atlandı.")
+        await call.leave_group_call(chat_id)
+        is_playing[chat_id] = False
+        await message.reply("**Atlandı.**")
+        
+        # Queue'dan sonraki şarkıyı çal
+        if chat_id in queue and queue[chat_id]:
+            next_file = queue[chat_id].pop(0)
+            await call.join_group_call(
+                chat_id,
+                AudioPiped(next_file),
+                stream_type=StreamType().local_stream
+            )
+            is_playing[chat_id] = True
     except:
         await message.reply("Şu anda bir şey çalmıyor.")
 
@@ -84,30 +91,32 @@ async def durdur(client, message: Message):
     try:
         await call.leave_group_call(chat_id)
         is_playing[chat_id] = False
-        await message.reply("Sesli sohbetten çıkıldı.")
+        queue[chat_id] = []
+        await message.reply("**Sesli sohbetten çıkıldı.**")
     except:
         await message.reply("Zaten sesli sohbette değilim.")
 
 @app.on_message(filters.command("sor"))
 async def sor(client, message: Message):
     if len(message.command) < 2:
-        return await message.reply("Kullanım: `/sor Merhaba nasılsın?`")
+        return await message.reply("**Kullanım:** `/sor <soru>`")
     soru = " ".join(message.command[1:])
     cevap = await ai_cevap(soru)
     await message.reply(cevap)
 
-# ====================== AI SOHBET ======================
+# Genel AI Sohbet (Özel veya "alone" ile başlayan mesajlar)
 @app.on_message(filters.text & ~filters.command)
 async def ai_chat(client, message: Message):
-    if message.chat.type == "private" or message.text.lower().startswith("alone"):
+    text = message.text.lower()
+    if message.chat.type == "private" or text.startswith("alone") or text.startswith("bot"):
         cevap = await ai_cevap(message.text)
         await message.reply(cevap)
 
-# ====================== BAŞLAT ======================
+# ====================== BOT BAŞLATMA ======================
 async def main():
     await app.start()
     await call.start()
-    print("✅ AloneMusic Bot Çalışıyor...")
+    print("✅ AloneMusic Bot Başarıyla Çalışıyor!")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
